@@ -20,7 +20,7 @@ typedef struct {
   int numCpus;
   virVcpuInfoPtr cpuInfo;
   unsigned char* cpuMaps;
-  double* usage;
+  double** usage;
   PcpuTime* time;
 } DomainStats;
 
@@ -32,7 +32,8 @@ typedef struct {
 } NodeTime;
 
 #define NANOSEC 1000000000
-#define THRESHOLD 50.0
+#define THRESHOLD 30.0
+#define MAPLEN VIR_CPU_MAPLEN(maxCpu);
 int numVcpu = 0;
 
 int* ListingDomain(virConnectPtr conn);
@@ -53,6 +54,24 @@ int GetNumCPU(unsigned char* cpumap, int maxCpu) {
   return result;
 }
 
+int checkMap(unsigned char* cpumap, int pcpu, int vcpu, int maxCpu) {
+  int index = vcpu * maxCpu + pcpu;
+  return cpumap[index / 8] & (1 << index % 8);
+}
+
+int check(DomainStats *cpuStats, int max, int numDomains, int maxCpu, int* pcpuNum) {
+  int result = 0;
+  for(int i = 0; i < numDomains; i++) {
+    for(int j = 0; j < cpuStats[i].numCpus; j++) {
+      if(cpuStats[i].usage[j][max] < 60 && cpuStats[i].usage[j][max] != 0) {
+        result |= 1;
+      }
+    }
+  }
+  return result;
+}
+
+
 int CheckAffinity(DomainStats *curStats, int numDomains, int maxCpu) {
   int result = 0;
   for(int i = 0; i < numDomains ; i++) {
@@ -63,7 +82,8 @@ int CheckAffinity(DomainStats *curStats, int numDomains, int maxCpu) {
       for(int j = 0; j < curStats[i].numCpus; j++) {
         if(curStats[i].cpuInfo[j].state != 0) {
           static int index = 0;
-          cpumap[index / maxCpu] = 1 << (index % maxCpu);
+          int tmp = j * maxCpu + index;
+          cpumap[tmp/ 8] = 1 << (tmp % 8);
           virDomainPinVcpu(curStats[i].dom, curStats[i].cpuInfo[j].number, cpumap, VIR_CPU_MAPLEN(maxCpu)); 
           index++;
 
@@ -185,11 +205,17 @@ DomainStats* GetDomainStats(virDomainPtr* domArr, int numDomains, int maxCpu)
     domStats[i].cpuMaps = cpuMaps;
     int nparams = virDomainGetCPUStats(domArr[i], NULL, 0, 0, 1, 0); // nparams
     virTypedParameterPtr params = calloc(maxCpu * nparams, sizeof(virTypedParameter));
+    printf("nparams = %d\n", nparams);
     virDomainGetCPUStats(domArr[i], params, nparams, 0, maxCpu, 0); // per-cpu stats
     domStats[i].time = calloc(maxCpu, sizeof(PcpuTime));
     for(int j = 0; j < maxCpu; j++) {
       domStats[i].time[j].pcpu = *(long long int *)(&params[j * 2].value);
       domStats[i].time[j].vcpu = *(long long int*)(&params[j * 2 + 1].value);
+      if(j == 0 || j == 1) {
+        printf("pcpu(%d) time : %lld", j, domStats[i].time[j].pcpu);
+        printf("vcpu(%d) time : %lld", j, domStats[i].time[j].vcpu);
+      }
+
     }
 
   }
@@ -203,17 +229,16 @@ void PrintDomainStats(DomainStats* domStats, int numDomains, int maxcpus)
     printf("DomName(id) : %s(%d)\n", virDomainGetName(domStats[i].dom), i);
     printf("numCpus : %d\n", domStats[i].numCpus);
     virVcpuInfoPtr cpuInfo = domStats[i].cpuInfo;
-    double *usage = domStats[i].usage;
+    double **usage = domStats[i].usage;
     
     printf("=====  vCPU Info ======\n");
     for(int j = 0; j < domStats[i].numCpus; j++) {
       if(cpuInfo[j].state == 0)
         continue;
-      printf("(vCpu ID, pCpuID, cpuTime, usage) : (%d, %d, %.2f, %.2f%%)\n", cpuInfo[j].number, cpuInfo[j].cpu, cpuInfo[j].cpuTime / (double)(NANOSEC), usage[j]);
-
+      printf("(vCpu ID, pCpuID, cpuTime) : (%d, %d, %.2f)\n", cpuInfo[j].number, cpuInfo[j].cpu, cpuInfo[j].cpuTime / (double)(NANOSEC));
       
       for (int k = 0; k < maxcpus; k++) {
-        printf("%c", VIR_CPU_USED(domStats[i].cpuMaps, k) ? '1' : '0');
+        printf("%.2f|", VIR_CPU_USED(domStats[i].cpuMaps, k) ? domStats[i].usage[j][k] : 0.0);
       }
       printf("\n");
     }
@@ -253,16 +278,29 @@ int* CalculateStats(DomainStats* curStats, DomainStats* prevStats, double period
     pcpuUsageArr[i] = 0.0;
   }
   numVcpu = 0;
+
   for(int i = 0; i < numDomains; i++) {
-    curStats[i].usage = calloc(curStats[i].numCpus, sizeof(double));
     for(int j = 0; j < curStats[i].numCpus; j++) {
+      if(curStats[i].cpuInfo[j].state != 0) {
+        for(int k = 0; k < maxCpu; k++) {
+          if(checkMap(curStats[i].cpuMaps, k, j, maxCpu)) {
+            pcpuNum[k] += 1.0;
+          }
+        }
+      } 
+    }
+  }
+  for(int i = 0; i < numDomains; i++) {
+    curStats[i].usage = calloc(curStats[i].numCpus, sizeof(double*));
+    for(int j = 0; j < curStats[i].numCpus; j++) {
+      curStats[i].usage[j] = calloc(maxCpu, sizeof(double));
       if(curStats[i].cpuInfo[j].state == 0)
         continue;
-      curStats[i].usage[j] = CalUsage(curStats[i].cpuInfo[j].cpuTime - prevStats[i].cpuInfo[j].cpuTime, period);
       for(int k = 0; k < maxCpu; k++) {
-        if(curStats[i].cpuMaps[k / 8] & (1 << k % 8)) {
-          pcpuUsageArr[k] += curStats[i].usage[j] / GetNumCPU(curStats[i].cpuMaps, maxCpu);
-          pcpuNum[k] += 1.0;
+        if(checkMap(curStats[i].cpuMaps, k, j, maxCpu)) {
+          curStats[i].usage[j][k] = CalUsage(curStats[i].cpuInfo[j].cpuTime - prevStats[i].cpuInfo[j].cpuTime, period * GetNumCPU(curStats[i].cpuMaps, maxCpu)) * pcpuNum[k];
+          pcpuUsageArr[k] += curStats[i].usage[j][k];
+          //pcpuNum[k] += 1.0;
         }
       }
       numVcpu += 1;
@@ -273,7 +311,7 @@ int* CalculateStats(DomainStats* curStats, DomainStats* prevStats, double period
     if(pcpuNum[i] == 0)
       continue;
     //pcpuUsageArr[i] = (pcpuUsageArr[i] / (double)period) * 100;
-    printf("(pcpu id, usage) : %d, %.2f%%\n", i, pcpuUsageArr[i]);
+    printf("(pcpu id, usage) : %d, %.2f%%\n", i, pcpuUsageArr[i] / pcpuNum[i]);
     //PrintDomainStats(curStats, numDomains, maxCpu);
     //pcpuUsageArr[i] = pcpuUsageArr[i] * (double)pcpuNum[i]; 
   }
@@ -329,8 +367,9 @@ restart:
       }
     }
 
-    printf("%f, %f, %d, %d, %d, %d, %d\n", max_u, min_u, max, min, zero, used_pcpu, numVcpu);
-    if(max_u - min_u < THRESHOLD && ((zero_b && numVcpu == used_pcpu) || !zero_b))
+    int c = check(curStats, max, numDomains, maxCpu, pcpuNum);
+    printf("%f, %f, %d, %d, %d, %d, %d\n", max_u, min_u, max, min, zero, used_pcpu, c);
+    if(max_u - min_u < THRESHOLD && (max_u < 120 || c))
       break;
     
 
@@ -339,22 +378,43 @@ restart:
         if(curStats[i].cpuInfo[j].cpu == max && curStats[i].cpuInfo[j].state != 0) {
           cpumap = calloc(curStats[i].numCpus, VIR_CPU_MAPLEN(maxCpu));
           int index;
-          if(zero_b) {
+          if(zero_b && min_u > 50) {
             memset(cpumap, 0, VIR_CPU_MAPLEN(maxCpu));
-            index = zero;
+            index = j * maxCpu + zero;
             cpumap[index / 8] = 1 << (index % 8);
+            pcpuUsageArr[max] -= (curStats[i].usage[j][max]);
+            pcpuUsageArr[index] += (curStats[i].usage[j][max]);
+            curStats[i].usage[j][index] += curStats[i].usage[j][max];
+            curStats[i].usage[j][max] = 0;
+            pcpuNum[curStats[i].cpuInfo[j].cpu] -= 1;
+            pcpuNum[index] += 1;
+            curStats[i].cpuInfo[j].cpu = index;
+          }
+          else if(zero_b) {
+            index = j * maxCpu + min;
+            cpumap[index / 8] = 1 << (index % 8);
+            pcpuUsageArr[max] = 0;
+            pcpuUsageArr[index] = 0;
+            curStats[i].usage[j][index] += curStats[i].usage[j][max];
+            curStats[i].usage[j][max] = 0;
+            pcpuNum[curStats[i].cpuInfo[j].cpu] -= 1;
+            pcpuNum[index] += 1;
+            curStats[i].cpuInfo[j].cpu = index;
           }
           else {
-            index = min;
+            index = j * maxCpu + min;
             cpumap[index / 8] |= 1 << (index % 8);
+            pcpuUsageArr[max] -= (curStats[i].usage[j][max] / (pcpuNum[max] + 1));
+            pcpuUsageArr[index] += (curStats[i].usage[j][max] / (pcpuNum[max] + 1));
+            curStats[i].usage[j][index] += (curStats[i].usage[j][max] / (pcpuNum[max] + 1));
+            curStats[i].usage[j][max] -= (curStats[i].usage[j][max] / (pcpuNum[max] + 1));
+            //pcpuNum[max] -= 1;
+            pcpuNum[index] += 1;
+            curStats[i].cpuInfo[j].cpu = index;
           }
           virDomainPinVcpu(curStats[i].dom, curStats[i].cpuInfo[j].number, cpumap, VIR_CPU_MAPLEN(maxCpu));
           free(cpumap);
-          pcpuUsageArr[max] -= (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu));
-          pcpuUsageArr[index] += (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu));
-          pcpuNum[curStats[i].cpuInfo[j].cpu] -= 1;
-          pcpuNum[index] += 1;
-          curStats[i].cpuInfo[j].cpu = index;
+
           goto restart;
         }
       }

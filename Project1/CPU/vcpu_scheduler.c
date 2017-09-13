@@ -71,6 +71,26 @@ int check(DomainStats *cpuStats, int max, int numDomains, int maxCpu, int* pcpuN
   return result;
 }
 
+void DestroyStats(DomainStats* d, int n) {
+  for(int i = 0; i < n; i++) {
+    if(d[i].cpuInfo)    
+      free(d[i].cpuInfo);
+    if(d[i].cpuMaps)    
+      free(d[i].cpuMaps);
+    if(d[i].time)    
+      free(d[i].time);
+    if(d[i].usage) { 
+      for(int j = 0; j < d[i].numCpus; j++) {
+        if(d[i].usage[j])    
+          free(d[i].usage[j]);
+        }
+      free(d[i].usage);
+      }
+  }
+  if(d)    
+    free(d);
+}
+
 
 int CheckAffinity(DomainStats *curStats, int numDomains, int maxCpu) {
   int result = 0;
@@ -138,13 +158,12 @@ int main(int argc, char *argv[])
       domArr = GetDomainArr(numDomains, activeDomains, conn);
     }
     prevCounts = numDomains;
-    //if(curStats)
-      //DestroyStats(curStats);
     curtime = time(0);
     period = curtime - prevtime;
     prevtime = curtime;
+    //if(curStats)
+      //DestroyStats(curStats, numDomains);
     curStats = GetDomainStats(domArr, numDomains, maxCpu);
-    //gettimeofday(&cur, NULL);
     if(prevStats) {
       double* pcpuUsageArr = calloc(maxCpu, sizeof(double));
       int* pcpuNum = CalculateStats(curStats, prevStats, (double)period, pcpuUsageArr, numDomains, maxCpu);
@@ -160,7 +179,8 @@ int main(int argc, char *argv[])
       free(pcpuNum);
     }
 
-    
+    if(prevStats)
+      DestroyStats(prevStats, numDomains);
     prevStats = curStats;
     sleep(interval);
   }
@@ -243,7 +263,6 @@ void PrintDomainStats(DomainStats* domStats, int numDomains, int maxcpus)
     printf("DomName(id) : %s(%d)\n", virDomainGetName(domStats[i].dom), i);
     printf("numCpus : %d\n", domStats[i].numCpus);
     virVcpuInfoPtr cpuInfo = domStats[i].cpuInfo;
-    double **usage = domStats[i].usage;
     
     printf("=====  vCPU Info ======\n");
     for(int j = 0; j < domStats[i].numCpus; j++) {
@@ -386,6 +405,8 @@ restart:
     int c = check(curStats, max, numDomains, maxCpu, pcpuNum);
     printf("%f, %f, %d, %d, %d, %d, %d\n", max_u, min_u, max, min, zero, used_pcpu, c);
     if(max_u - min_u < THRESHOLD && (max_u < 120 || c))
+      break;
+    if(min == max && max == -1)
       break;
     if(count == maxCpu * maxCpu)
       break;

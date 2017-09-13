@@ -8,12 +8,20 @@
 #include <sys/time.h>
 #include <limits.h>
 
+
+
+typedef struct {
+  long long int pcpu;
+  long long int vcpu;
+} PcpuTime;
+
 typedef struct {
   virDomainPtr dom;
   int numCpus;
   virVcpuInfoPtr cpuInfo;
   unsigned char* cpuMaps;
   double* usage;
+  PcpuTime* time;
 } DomainStats;
 
 typedef struct {
@@ -24,7 +32,7 @@ typedef struct {
 } NodeTime;
 
 #define NANOSEC 1000000000
-#define THRESHOLD 10.0
+#define THRESHOLD 50.0
 int numVcpu = 0;
 
 int* ListingDomain(virConnectPtr conn);
@@ -173,7 +181,17 @@ DomainStats* GetDomainStats(virDomainPtr* domArr, int numDomains, int maxCpu)
 
     virDomainGetVcpus(domArr[i], cpuInfo, domStats[i].numCpus, cpuMaps, cpulen);
     domStats[i].cpuInfo = cpuInfo;
+    printf("domain(%d) time : %lld", i, domStats[i].cpuInfo[0].cpuTime);
     domStats[i].cpuMaps = cpuMaps;
+    int nparams = virDomainGetCPUStats(domArr[i], NULL, 0, 0, 1, 0); // nparams
+    virTypedParameterPtr params = calloc(maxCpu * nparams, sizeof(virTypedParameter));
+    virDomainGetCPUStats(domArr[i], params, nparams, 0, maxCpu, 0); // per-cpu stats
+    domStats[i].time = calloc(maxCpu, sizeof(PcpuTime));
+    for(int j = 0; j < maxCpu; j++) {
+      domStats[i].time[j].pcpu = *(long long int *)(&params[j * 2].value);
+      domStats[i].time[j].vcpu = *(long long int*)(&params[j * 2 + 1].value);
+    }
+
   }
 
   return domStats;
@@ -257,7 +275,7 @@ int* CalculateStats(DomainStats* curStats, DomainStats* prevStats, double period
     //pcpuUsageArr[i] = (pcpuUsageArr[i] / (double)period) * 100;
     printf("(pcpu id, usage) : %d, %.2f%%\n", i, pcpuUsageArr[i]);
     //PrintDomainStats(curStats, numDomains, maxCpu);
-    pcpuUsageArr[i] = pcpuUsageArr[i] * (double)pcpuNum[i]; 
+    //pcpuUsageArr[i] = pcpuUsageArr[i] * (double)pcpuNum[i]; 
   }
   return pcpuNum;
 }
@@ -293,7 +311,7 @@ restart:
     min_u = LLONG_MAX, max_u = 0;
     int used_pcpu = 0;
     
-    for(int i = 0; i < maxCpu; i++) {
+    for(int i = maxCpu - 1; i >= 0; i--) {
       if(pcpuUsageArr[i] > 0) {
         if(pcpuUsageArr[i] > max_u) {
           max_u = pcpuUsageArr[i];
@@ -319,7 +337,7 @@ restart:
     for(int i = 0; i < numDomains; i++) {
       for(int j = 0; j < curStats[i].numCpus; j++) {
         if(curStats[i].cpuInfo[j].cpu == max && curStats[i].cpuInfo[j].state != 0) {
-          cpumap = curStats[i].cpuMaps;
+          cpumap = calloc(curStats[i].numCpus, VIR_CPU_MAPLEN(maxCpu));
           int index;
           if(zero_b) {
             memset(cpumap, 0, VIR_CPU_MAPLEN(maxCpu));
@@ -331,8 +349,9 @@ restart:
             cpumap[index / 8] |= 1 << (index % 8);
           }
           virDomainPinVcpu(curStats[i].dom, curStats[i].cpuInfo[j].number, cpumap, VIR_CPU_MAPLEN(maxCpu));
-          pcpuUsageArr[curStats[i].cpuInfo[j].cpu] -= (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu)) * pcpuNum[curStats[i].cpuInfo[j].cpu];
-          pcpuUsageArr[index] += (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu)) * pcpuNum[curStats[i].cpuInfo[j].cpu];
+          free(cpumap);
+          pcpuUsageArr[max] -= (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu));
+          pcpuUsageArr[index] += (*curStats[i].usage / GetNumCPU(curStats[i].cpuMaps, maxCpu));
           pcpuNum[curStats[i].cpuInfo[j].cpu] -= 1;
           pcpuNum[index] += 1;
           curStats[i].cpuInfo[j].cpu = index;

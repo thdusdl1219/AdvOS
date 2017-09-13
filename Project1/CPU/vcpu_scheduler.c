@@ -5,7 +5,7 @@
 #include <libvirt/libvirt.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/time.h>
+#include <time.h>
 #include <limits.h>
 
 
@@ -63,7 +63,7 @@ int check(DomainStats *cpuStats, int max, int numDomains, int maxCpu, int* pcpuN
   int result = 0;
   for(int i = 0; i < numDomains; i++) {
     for(int j = 0; j < cpuStats[i].numCpus; j++) {
-      if(cpuStats[i].usage[j][max] < 60 && cpuStats[i].usage[j][max] != 0) {
+      if(cpuStats[i].usage[j][max] < 90 && cpuStats[i].usage[j][max] != 0) {
         result |= 1;
       }
     }
@@ -108,9 +108,9 @@ int main(int argc, char *argv[])
   int maxCpu = virNodeGetCPUMap(conn, NULL, NULL, 0);
   int numDomains;
   int prevCounts = 0;
-  int* activeDomains;
-  virDomainPtr* domArr;
-  DomainStats* curStats, *prevStats = NULL;
+  int* activeDomains = NULL;
+  virDomainPtr* domArr = NULL;
+  DomainStats* curStats = NULL, *prevStats = NULL;
 
   /*
   NodeTime* nodeTime = GetNodeTimes(conn, maxCpu);
@@ -125,26 +125,39 @@ int main(int argc, char *argv[])
     return -1;
   }
   int interval = atoi(argv[1]);
+  int period = 0, curtime = 0, prevtime = 0;
 
 
   while((numDomains = virConnectNumOfDomains(conn)) > 0) {
     if(prevCounts != numDomains) {
+      if(activeDomains)
+        free(activeDomains);
       activeDomains = ListingDomain(conn);
+      if(domArr)
+        free(domArr);
       domArr = GetDomainArr(numDomains, activeDomains, conn);
     }
     prevCounts = numDomains;
-
+    //if(curStats)
+      //DestroyStats(curStats);
+    curtime = time(0);
+    period = curtime - prevtime;
+    prevtime = curtime;
     curStats = GetDomainStats(domArr, numDomains, maxCpu);
     //gettimeofday(&cur, NULL);
     if(prevStats) {
       double* pcpuUsageArr = calloc(maxCpu, sizeof(double));
-      int* pcpuNum = CalculateStats(curStats, prevStats, (double)interval, pcpuUsageArr, numDomains, maxCpu);
+      int* pcpuNum = CalculateStats(curStats, prevStats, (double)period, pcpuUsageArr, numDomains, maxCpu);
       PrintDomainStats(curStats, numDomains, maxCpu);
       if(CheckAffinity(curStats, numDomains, maxCpu)) {
         curStats = GetDomainStats(domArr, numDomains, maxCpu);
-        pcpuNum = CalculateStats(curStats, prevStats, (double)interval, pcpuUsageArr, numDomains, maxCpu);
+        if(pcpuNum)
+          free(pcpuNum);
+        pcpuNum = CalculateStats(curStats, prevStats, (double)period, pcpuUsageArr, numDomains, maxCpu);
       }
       PinCPUs(curStats, pcpuUsageArr, maxCpu, pcpuNum, numDomains, domArr);
+      free(pcpuUsageArr);
+      free(pcpuNum);
     }
 
     
@@ -217,6 +230,7 @@ DomainStats* GetDomainStats(virDomainPtr* domArr, int numDomains, int maxCpu)
       }
 
     }
+    free(params);
 
   }
 
@@ -330,6 +344,7 @@ void PinCPUs(DomainStats* curStats, double* pcpuUsageArr, int maxCpu, int* pcpuN
   double min_u, max_u;
   //DomainStats* tmpStats;
   //double interval;
+  int count = 0;
   while(1) {
 
 restart:
@@ -348,6 +363,7 @@ restart:
     zero_b = 0;
     min_u = LLONG_MAX, max_u = 0;
     int used_pcpu = 0;
+    count++;
     
     for(int i = maxCpu - 1; i >= 0; i--) {
       if(pcpuUsageArr[i] > 0) {
@@ -370,6 +386,8 @@ restart:
     int c = check(curStats, max, numDomains, maxCpu, pcpuNum);
     printf("%f, %f, %d, %d, %d, %d, %d\n", max_u, min_u, max, min, zero, used_pcpu, c);
     if(max_u - min_u < THRESHOLD && (max_u < 120 || c))
+      break;
+    if(count == maxCpu * maxCpu)
       break;
     
 
@@ -419,8 +437,5 @@ restart:
         }
       }
     }
-
-
-
   }
 }

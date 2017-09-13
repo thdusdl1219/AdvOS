@@ -404,9 +404,7 @@ restart:
 
     int c = check(curStats, max, numDomains, maxCpu, pcpuNum);
     printf("%f, %f, %d, %d, %d, %d, %d\n", max_u, min_u, max, min, zero, used_pcpu, c);
-    if(max_u - min_u < THRESHOLD && (max_u < 120 || c))
-      break;
-    if(min == max && max == -1)
+    if(max_u - min_u < THRESHOLD * pcpuNum[max] && (max_u < 120 || c))
       break;
     if(count == maxCpu * maxCpu)
       break;

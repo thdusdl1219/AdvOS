@@ -54,6 +54,18 @@ error:
   return -1;
 }
 
+int FindMax(DomainStats* d, int n, int except) {
+  unsigned long r = 0;
+  int max = -1;
+  for(int i = 0; i < n; i++) {
+    unsigned long u = d[i].free;
+    if(u > r && i != except && u > 100 * 1024) {
+      r = u;
+      max = i;
+    }
+  }
+  return max;
+}
 
 
 int main(int argc, char *argv[])
@@ -70,7 +82,7 @@ int main(int argc, char *argv[])
   int prevCounts = 0;
   int* activeDomains = NULL;
   virDomainPtr* domArr = NULL;
-  DomainStats* curStats = NULL, prevStats=NULL;
+  DomainStats* curStats = NULL, *prevStats=NULL;
   double MIN_THRESHOLD = 20.0;
   double MAX_THRESHOLD = 60.0;
 
@@ -110,8 +122,10 @@ int main(int argc, char *argv[])
         unsigned long long total = curStats[i].total;
         unsigned long long free = curStats[i].free;
         double usage = CalUsage(free, total);
-        unsigned long long xx, alpha = curStats[i].total / 20, nodeFree = GetNodeFreeMemory(conn);
+        unsigned long long xx, nodeFree = GetNodeFreeMemory(conn), alpha = prevStats[i].free - curStats[i].free, beta = curStats[i].free - prevStats[i].free;
         if(usage < MIN_THRESHOLD) {
+          if(alpha < curStats[i].total / 10)
+            alpha = curStats[i].total / 10;
           xx = curStats[i].total + alpha;
           if(xx > curStats[i].maxMem) {
             // error
@@ -121,15 +135,33 @@ int main(int argc, char *argv[])
           }
           else {
             printf("Increase(%d) Memory (usage, before, after) : (%.2f%%, %llu, %llu)\n", i, usage, total, xx);
-            printf("Node Free Memory : %llu\n", nodeFree);
+            printf("Node Free Memory : %llu\n\n", nodeFree);
             virDomainSetMemory(curStats[i].dom, xx);
+            curStats[i].total += alpha;
+            int max = FindMax(curStats, numDomains, i);
+            if(max != -1) {
+              double u = CalUsage(curStats[max].free, curStats[max].total);
+              printf("u : %.2f%% \n", u);
+              if(u > MIN_THRESHOLD + 11) {
+                if(alpha > curStats[max].total / 10)
+                  alpha = curStats[max].total / 10;
+                xx = curStats[max].total - alpha;
+                printf("Decrease(%d) Memory (usage, before, after) : (%.2f%%, %lu, %llu)\n", max, u, curStats[max].total, xx);
+                printf("Node Free Memory : %llu\n\n", nodeFree);
+                virDomainSetMemory(curStats[max].dom, xx);
+                curStats[max].total -= alpha;
+              }
+            }
           }
-        }
-        if(usage > MAX_THRESHOLD) {
-          xx = curStats[i].total - alpha;
+        }  
+        if(usage > MAX_THRESHOLD && free > 100 * 1024) {
+          if(beta > curStats[i].total / 10)
+            beta = curStats[i].total / 10;
+          xx = curStats[i].total - beta;
           printf("Decrease(%d) Memory (usage, before, after) : (%.2f%%, %llu, %llu)\n", i, usage, total, xx);
-          printf("Node Free Memory : %llu\n", nodeFree);
+          printf("Node Free Memory : %llu\n\n", nodeFree);
           virDomainSetMemory(curStats[i].dom, xx);
+          curStats[i].total -= beta;
         }
       }
     }

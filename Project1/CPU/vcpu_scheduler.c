@@ -70,6 +70,15 @@ int FindMin(double* pcpuUsageArr, double avg, int maxCpu, int zero) {
       }
     }
   }
+  if(zero && m == -1) {
+    for(int i = 0; i < maxCpu; i++) {
+      if(pcpuUsageArr[i] != 0) {
+        double ab = absol(pcpuUsageArr[i] - avg);
+        max = ab;
+        m = i;
+      }
+    }
+  }
   return m;
 }
 
@@ -124,7 +133,7 @@ int* Find_ij(DomainStats* curDomain, double* pArr, int numDomains, int maxCpu, i
 
   for(int i = 0; i < numDomains; i++) {
     for(int j = 0; j < curDomain[i].numCpus; j++) {
-      if(curDomain[i].usage[j][m] != 0 || zero) {
+      if(curDomain[i].usage[j][m] != 0) {
         double ab = absol(curDomain[i].usage[j][m] + pArr[min] - avg);
         if(ab < mmin) {
           mmin = ab;
@@ -473,7 +482,7 @@ void PinCPUs(DomainStats* curStats, double* pcpuUsageArr, int maxCpu, int* pcpuN
       }
     }
     double avg = GetAvg(pcpuUsageArr, maxCpu, used_pcpu);
-    int zero = (sum > maxCpu * 99) && (used_pcpu != numVcpu);
+    int zero = (sum > numVcpu * 99) && (used_pcpu != numVcpu);
     printf("avg : %f\n", avg);
     printf("sum :%f\n", sum);
     int min = FindMin(pcpuUsageArr, avg, maxCpu, zero);
@@ -493,10 +502,10 @@ void PinCPUs(DomainStats* curStats, double* pcpuUsageArr, int maxCpu, int* pcpuN
     int i = ij[0];
     int j = ij[1];
     int k = ij[2];
-    printf("i, j, k, value : %d, %d, %d, %f\n", i, j, k, curStats[i].usage[j][k]);
     if(i == -1 || j == -1 || k == -1) {
       exit(-1);
     }
+    printf("i, j, k, value : %d, %d, %d, %f\n", i, j, k, curStats[i].usage[j][k]);
     int index;
     cpumap = calloc(curStats[i].numCpus, VIR_CPU_MAPLEN(maxCpu));
     if(avg - pcpuUsageArr[min] > 0) {

@@ -482,7 +482,7 @@ void PinCPUs(DomainStats* curStats, double* pcpuUsageArr, int maxCpu, int* pcpuN
       }
     }
     double avg = GetAvg(pcpuUsageArr, maxCpu, used_pcpu);
-    int zero = (sum > numVcpu * 95) && (used_pcpu != numVcpu);
+    int zero = (sum > numVcpu * 95) && (used_pcpu != numVcpu) && (used_pcpu < maxCpu);
     printf("avg : %f\n", avg);
     printf("sum :%f\n", sum);
     int min = FindMin(pcpuUsageArr, avg, maxCpu, zero);
